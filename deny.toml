@@ -3,6 +3,15 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # Both are "unmaintained" notices, not vulnerabilities, on font-shaping
+    # crates pulled in transitively by resvg/usvg/eframe — there is no
+    # alternative version to move to until those upstreams migrate. tangt only
+    # ever feeds them SVG it generated itself (see SECURITY.md), so neither is
+    # on an untrusted-input path. Revisit when resvg/eframe update.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via resvg/usvg/eframe" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained; transitive via usvg" },
+]
 
 [bans]
 multiple-versions = "allow" # resvg and svg2pdf legitimately pin different usvg
