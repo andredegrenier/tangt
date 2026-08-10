@@ -235,6 +235,27 @@ pub fn add_dependency(model: &GanttModel, task: &Task, on: &TaskId) -> Option<Ve
     })
 }
 
+/// Remove `task`'s dependency on `on`. The last remaining dependency is
+/// replaced by the task's current start date so it doesn't jump.
+pub fn remove_dependency(src: &str, task: &Task, on: &TaskId) -> Vec<TextEdit> {
+    let Some(dep) = task.deps.iter().find(|d| d.on == *on) else {
+        return Vec::new();
+    };
+    let StartSrc::After { span, ids_end, .. } = &task.start_src else {
+        return Vec::new();
+    };
+    if task.deps.len() == 1 {
+        return vec![TextEdit::new(span.start, span.end, format_day(task.start_day))];
+    }
+    let (mut s, mut e) = (dep.span.start, dep.span.end);
+    if e < *ids_end {
+        e += src[e..*ids_end].len() - src[e..*ids_end].trim_start().len();
+    } else {
+        s -= src[..s].len() - src[..s].trim_end().len();
+    }
+    vec![TextEdit::new(s, e, "")]
+}
+
 // ---- add / delete / reorder --------------------------------------------
 
 /// Smallest unused `{prefix}{n}` id.
@@ -570,6 +591,24 @@ mod tests {
         assert!(add_dependency(d.model(), &task_a, &"b".into()).is_none());
         let task_b = d.model().tasks["b"].clone();
         assert!(add_dependency(d.model(), &task_b, &"a".into()).is_none()); // duplicate
+    }
+
+    #[test]
+    fn remove_dependency_from_list_and_sole() {
+        let mut d = doc(
+            "task \"A\" : a, 2026-08-10, 2d\ntask \"B\" : b, 2026-08-10, 5d\ntask \"C\" : c, after a b, 1d\n",
+        );
+        let task = d.model().tasks["c"].clone();
+        let edits = remove_dependency(d.text(), &task, &"a".into());
+        apply(&mut d, Intent::AddDependency, edits);
+        assert!(d.text().contains("after b, 1d"));
+        // Removing the last dependency pins the current start date.
+        let task = d.model().tasks["c"].clone();
+        let start = task.start_day;
+        let edits = remove_dependency(d.text(), &task, &"b".into());
+        apply(&mut d, Intent::AddDependency, edits);
+        assert!(d.text().contains(&format!("{}, 1d", format_day(start))));
+        assert!(!d.model().has_errors());
     }
 
     #[test]

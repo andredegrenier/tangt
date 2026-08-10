@@ -1,14 +1,16 @@
 # tangt
 
+[![ci](https://github.com/andredegrenier/tangt/actions/workflows/ci.yml/badge.svg)](https://github.com/andredegrenier/tangt/actions/workflows/ci.yml)
+[![gitleaks](https://github.com/andredegrenier/tangt/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/andredegrenier/tangt/actions/workflows/gitleaks.yml)
+
 A native Gantt chart app built around a plain-text DSL. Charts are `.tangt`
 files you can edit as code or directly on the canvas — both at once, with one
 undo history spanning both. Export to vector PDF, SVG, or PNG.
 
-Built on the architecture of [gridflow](../claude/gridflow): the text is the
-single source of truth, and every canvas gesture (drag a bar, resize it, draw
-a dependency, reorder rows) is a *surgical splice* of exactly the bytes that
-encode that fact — comments, ordering, and formatting elsewhere survive by
-construction.
+The text is the single source of truth, and every canvas gesture (drag a bar,
+resize it, draw a dependency, reorder rows) is a *surgical splice* of exactly
+the bytes that encode that fact — comments, ordering, and formatting elsewhere
+survive by construction.
 
 ## The language
 
@@ -70,14 +72,39 @@ duplicate ids are diagnosed the same way.
 
 ## Building
 
+tangt is cross-platform (macOS, Windows, Linux); CI builds and tests on all
+three. Prebuilt binaries for each are attached to every [release](https://github.com/andredegrenier/tangt/releases).
+
 ```sh
 cargo run            # launch the app
-cargo test           # unit + property + golden tests
+cargo test           # unit + property + golden + hostile-input tests
+cargo clippy         # lints (CI runs with -D warnings)
 ```
+
+- **Linux** additionally needs the eframe/rfd system libraries:
+  `sudo apt-get install libgtk-3-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev`
+- **Windows / macOS** need only the Rust toolchain.
 
 Two crates: `tangt-core` (lexer → parser → scheduler → layout → scene, zero
 GUI deps, all the rewrite logic) and `tangt-app` (egui shell, canvas, editor,
 export backends). Rust 2021, eframe 0.35.
+
+## Secret scanning
+
+Commits and pushes are scanned with [gitleaks](https://github.com/gitleaks/gitleaks).
+CI runs it on every push and PR. To enable the local pre-commit hook (one time
+per clone):
+
+```sh
+brew install gitleaks          # or see the gitleaks README
+git config core.hooksPath .githooks
+```
+
+## Roadmap
+
+Planned work — CLI/headless rendering, a VS Code extension, critical path,
+baselines, and an optional local-model + MCP assist layer — is tracked in
+[ROADMAP.md](ROADMAP.md).
 
 ## License
 

@@ -19,6 +19,10 @@ pub fn is_weekend(day: i64) -> bool {
     weekday(day) >= 5
 }
 
+/// Upper bound on day-by-day calendar iteration (~300 years); the DoS
+/// backstop for every loop in `Calendar`.
+pub const MAX_CALENDAR_STEPS: i64 = 110_000;
+
 /// Working-day calendar: optional weekend exclusion plus holiday day-set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Calendar {
@@ -50,9 +54,13 @@ impl Calendar {
 
     /// Move `n` workdays from `day` (`day` itself is not counted; `n` may be
     /// negative). With no exclusions this is plain `day + n`.
+    ///
+    /// The step count is clamped to `MAX_CALENDAR_STEPS` so hostile files
+    /// (enormous lags/durations) can never spin this loop unbounded.
     pub fn add_working_days(&self, day: i64, n: i64) -> i64 {
+        let n = n.clamp(-MAX_CALENDAR_STEPS, MAX_CALENDAR_STEPS);
         if !self.has_exclusions() {
-            return day + n;
+            return day.saturating_add(n);
         }
         let step = if n >= 0 { 1 } else { -1 };
         let mut remaining = n.abs();
@@ -71,16 +79,18 @@ impl Calendar {
     pub fn span_end(&self, start: i64, n: i64) -> i64 {
         let n = n.max(1);
         if !self.has_exclusions() {
-            return start + n - 1;
+            return start.saturating_add(n - 1);
         }
         let first = self.snap_forward(start);
         self.add_working_days(first, n - 1)
     }
 
     /// Number of workdays in `[start, end]` (inclusive); minimum 1.
+    /// Spans beyond `MAX_CALENDAR_STEPS` fall back to calendar-day counting
+    /// (only reachable through absurd hand-written dates).
     pub fn working_days_between(&self, start: i64, end: i64) -> i64 {
-        if !self.has_exclusions() {
-            return (end - start + 1).max(1);
+        if !self.has_exclusions() || end.saturating_sub(start) > MAX_CALENDAR_STEPS {
+            return (end.saturating_sub(start) + 1).max(1);
         }
         let mut count = 0;
         for d in start..=end {

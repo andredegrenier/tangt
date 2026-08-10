@@ -61,7 +61,7 @@ impl Unit {
     pub fn days(self, n: i64) -> i64 {
         match self {
             Unit::Days => n,
-            Unit::Weeks => n * 7,
+            Unit::Weeks => n.saturating_mul(7),
         }
     }
 }

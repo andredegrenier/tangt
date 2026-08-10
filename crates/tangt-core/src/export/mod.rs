@@ -10,7 +10,7 @@ pub mod svg;
 
 use crate::ast::Tag;
 use crate::geometry::{
-    Rect, Rgba, TextMeasurer, BASE_FONT_SIZE, GUTTER_PAD, HEADER_H, ROW_H,
+    contrast_text, Rect, Rgba, TextMeasurer, BASE_FONT_SIZE, GUTTER_PAD, HEADER_H, ROW_H,
 };
 use crate::layout::{GanttLayout, TickKind};
 use crate::model::{GanttModel, Row};
@@ -86,8 +86,8 @@ impl Default for SceneStyle {
             milestone: Rgba::rgb(0x8a, 0x5c, 0xd6),
             arrow: Rgba::rgb(0x55, 0x60, 0x70),
             weekend: Rgba::rgba(0x00, 0x00, 0x00, 0x0d),
-            section_band: Rgba::rgba(0x4f, 0xa3, 0xff, 0x14),
-            today: Rgba::rgb(0xe0, 0x55, 0x55),
+            section_band: Rgba::rgba(0x5a, 0x64, 0x70, 0x18),
+            today: Rgba::rgb(0xc7, 0x7d, 0x00),
             progress: Rgba::rgba(0x00, 0x00, 0x00, 0x38),
         }
     }
@@ -237,7 +237,10 @@ pub fn build_scene(
         });
     }
 
-    // Bars, milestones, gutter labels.
+    // Bars, milestones, gutter labels. Track how far outside-labels reach so
+    // the bounds never clip them.
+    let mut label_max_x: f32 = 0.0;
+    let gutter_text_w = g - 1.5 * GUTTER_PAD;
     for t in model.tasks.values() {
         let Some(r) = layout.bar_rects.get(&t.id) else { continue };
         let rect = Rect::new([r.min[0] + g, r.min[1] + HEADER_H], [r.max[0] + g, r.max[1] + HEADER_H]);
@@ -254,6 +257,8 @@ pub fn build_scene(
                 ],
                 fill: t.color.map(|(c, _)| Rgba::from_rgb3(c)).unwrap_or(style.milestone),
             });
+            let tw = measurer.measure(&t.label, BASE_FONT_SIZE - 2.0)[0];
+            label_max_x = label_max_x.max(rect.max[0] + 6.0 + tw);
         } else {
             let fill = if let Some((c, _)) = t.color {
                 Rgba::from_rgb3(c)
@@ -284,6 +289,9 @@ pub fn build_scene(
             // Label inside the bar if it fits, otherwise to the right.
             let tw = measurer.measure(&t.label, BASE_FONT_SIZE - 2.0)[0];
             let inside = tw + 12.0 <= rect.width();
+            if !inside {
+                label_max_x = label_max_x.max(rect.max[0] + 6.0 + tw);
+            }
             items.push(SceneItem::Text {
                 pos: if inside {
                     [rect.min[0] + 6.0, rect.center()[1]]
@@ -292,16 +300,16 @@ pub fn build_scene(
                 },
                 text: t.label.clone(),
                 size: BASE_FONT_SIZE - 2.0,
-                color: if inside { Rgba::rgb(0xff, 0xff, 0xff) } else { style.text },
+                color: if inside { contrast_text(fill) } else { style.text },
                 bold: false,
                 align: Align::Left,
             });
         }
 
-        // Gutter row label.
+        // Gutter row label, elided to the gutter width.
         items.push(SceneItem::Text {
             pos: [GUTTER_PAD, row_y(t.row) + ROW_H / 2.0],
-            text: t.label.clone(),
+            text: elide(&t.label, gutter_text_w, BASE_FONT_SIZE, measurer),
             size: BASE_FONT_SIZE,
             color: style.text,
             bold: false,
@@ -313,7 +321,7 @@ pub fn build_scene(
     for s in &model.sections {
         items.push(SceneItem::Text {
             pos: [GUTTER_PAD / 2.0, row_y(s.row) + ROW_H / 2.0],
-            text: s.label.clone(),
+            text: elide(&s.label, gutter_text_w, BASE_FONT_SIZE, measurer),
             size: BASE_FONT_SIZE,
             color: style.text,
             bold: true,
@@ -335,7 +343,24 @@ pub fn build_scene(
 
     Scene {
         items,
-        bounds: Rect::new([0.0, 0.0], [total_w, total_h]).expand(16.0),
+        bounds: Rect::new([0.0, 0.0], [total_w.max(label_max_x), total_h]).expand(16.0),
         style,
     }
+}
+
+/// Truncate `text` with an ellipsis so it measures at most `max_w`.
+fn elide(text: &str, max_w: f32, size: f32, measurer: &dyn TextMeasurer) -> String {
+    if measurer.measure(text, size)[0] <= max_w {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        out.push(c);
+        if measurer.measure(&out, size)[0] > max_w - measurer.measure("…", size)[0] {
+            out.pop();
+            out.push('…');
+            return out;
+        }
+    }
+    out
 }

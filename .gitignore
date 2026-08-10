@@ -1,1 +1,11 @@
 /target
+/dist
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# Rendered chart exports (regenerate from source)
+/*.pdf
+/*.png
+/*.svg
