@@ -38,4 +38,7 @@ allow = [
     "OFL-1.1",
     "Ubuntu-font-1.0",
     "BSL-1.0",
+    # webpki-roots: the Mozilla CA root store, shipped as data under a
+    # permissive data license rather than a code license.
+    "CDLA-Permissive-2.0",
 ]

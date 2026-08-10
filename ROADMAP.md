@@ -58,26 +58,29 @@ portfolio/multi-project rollups, cost/budget tracking, SF dependencies.
 13. **Lightweight resource tags** — `@alice` in the DSL, color/filter by
     assignee, a simple overallocation strip. Stops well short of leveling. (M)
 
-## AI assist (SLM + MCP) — planned
+## AI assist (SLM + MCP) — shipped, with follow-ups
 
-An optional local-model + MCP layer, modeled on the `evo` architecture
-(`rmcp` server/client, an async↔egui bridge, a background worker thread with
-polled status, and HTTP model backends for Ollama / OpenAI-compatible
-endpoints plus an optional in-process llama.cpp backend behind a
-`builtin-llm` feature). Two directions:
+The MCP server (stdio + token-gated loopback HTTP) and the local-model plan
+assistant are implemented; see the README. Ten tools, one shared
+implementation in `tangt-core::tools`, every mutation applied as a single
+undoable `Op`. Remaining work:
 
-- **tangt as an MCP server** — expose the chart as tools (`add_task`,
-  `set_dates`, `add_dependency`, `list_tasks`, `render`) so an external
-  assistant can edit a plan; every tool call lowers to the same
-  `rewrite` + `Document::apply` path the canvas uses, so unified undo and the
-  text-as-source-of-truth invariant hold. Loopback HTTP with a bearer token,
-  plus a stdio `tangt mcp-serve` personality for headless clients.
-- **In-app "plan assistant"** — a local SLM that turns "add a two-week QA phase
-  after the backend work" into validated DSL edits, with the model output
-  passing through the same validation layer before it touches the document.
-
-This is a large, self-contained effort tracked separately; the CLI (P0 #1) is
-a prerequisite for the headless tool surface.
+- **Bundled local model** (M–L) — today the assistant needs an endpoint the
+  user runs (Ollama or OpenAI-compatible). Ship an in-process llama.cpp
+  backend behind a `builtin-llm` feature with a small GGUF catalogue,
+  resumable download and SHA-256 verification, so a fresh install can use the
+  assistant with nothing else set up. Weighed against a C++ toolchain on every
+  CI runner and a much slower release build.
+- **A `render` tool** (S) — depends on the headless CLI (P0 #1); would let an
+  agent produce a PNG/SVG of the plan it just edited.
+- **MCP client** (M) — let the in-app assistant call *other* MCP servers, so
+  it can pull a ticket list or a calendar while planning.
+- **Streaming tool feedback in the canvas** (S) — highlight the bar a tool call
+  is about to change, so a multi-step edit is watchable rather than sudden.
+- **Prompt-injection posture** (S) — the assistant reads task labels, which can
+  contain instructions. Tools are already narrow and the model cannot reach the
+  filesystem or network through tangt, but the system prompt should say so
+  explicitly.
 
 ## UI/UX polish backlog (beyond the quick wins already shipped)
 

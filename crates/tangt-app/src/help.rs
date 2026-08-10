@@ -44,9 +44,24 @@ impl HelpWindow {
                     ui.label("Enter: rename selected · Delete: delete selected · Esc: deselect");
                     ui.label(format!("F: fit chart · {cmd}J: reveal task under the text cursor"));
                     ui.label(format!("{cmd}Z / {cmd}{shift}Z: undo/redo (canvas and text share one history)"));
-                    ui.label(format!("{cmd}1: editor pane · {cmd}{shift}L: swap editor side"));
+                    ui.label(format!("{cmd}1: editor pane · {cmd}2: assistant · {cmd}{shift}L: swap editor side"));
                     ui.label(format!("{cmd}+ / {cmd}−: UI zoom (larger/smaller interface)"));
                     ui.label(format!("{cmd}/ or F1: this window"));
+                    ui.separator();
+                    ui.heading("Assistant and MCP");
+                    ui.label(format!(
+                        "{cmd}2 opens a prompt box — describe a change (\"add a two-week QA phase \
+                         after the backend work\") and the assistant edits the chart. Its changes \
+                         are ordinary edits: {cmd}Z undoes each one."
+                    ));
+                    ui.label(
+                        "Configure the model in View ▸ Preferences (Ollama, or any \
+                         OpenAI-compatible endpoint).",
+                    );
+                    ui.label(
+                        "The same tools are available to MCP clients: switch the server on in \
+                         Preferences, or run  tangt mcp-serve chart.tangt  for a headless one.",
+                    );
                 });
             });
         self.open = open;

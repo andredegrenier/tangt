@@ -70,6 +70,35 @@ duplicate ids are diagnosed the same way.
   paints, so exports always match the screen.
 - ⌘/ opens the in-app reference.
 
+## Automation: MCP and the assistant
+
+Both surfaces call the same ten tools (`list_tasks`, `add_task`, `set_dates`,
+`rename_task`, `set_progress`, `add_dependency`, `remove_dependency`,
+`delete_task`, `add_section`, `get_source`). Every edit they make is a text
+rewrite applied through the same path as a canvas drag — so ⌘Z undoes an
+assistant's change in one step, and your comments and formatting survive.
+
+**MCP server.** Point Claude Desktop, Claude Code, or any MCP client at the
+chart. Headless, no window needed:
+
+```sh
+tangt mcp-serve path/to/chart.tangt
+```
+
+Or serve the chart you're looking at: Preferences ▸ MCP, switch the server on,
+and paste the config it shows you. It binds `127.0.0.1` only and requires a
+bearer token — a loopback port is reachable by every program on the machine,
+so "it's only local" isn't a policy.
+
+**Plan assistant.** ⌘2 opens a prompt box: *"add a two-week QA phase after the
+backend work"*, *"push everything after the design sign-off out by a week"*.
+It runs against a model endpoint you configure in Preferences — Ollama or any
+OpenAI-compatible URL, local by default — and tangt sends your plan to that
+endpoint and nowhere else.
+The model gets the same tools, so it can only change the chart in ways the
+editor itself allows: a dependency cycle is refused, an unknown task id comes
+back as an error it can read and correct.
+
 ## Building
 
 tangt is cross-platform (macOS, Windows, Linux); CI builds and tests on all
@@ -77,7 +106,7 @@ three. Prebuilt binaries for each are attached to every [release](https://github
 
 ```sh
 cargo run            # launch the app
-cargo test           # unit + property + golden + hostile-input tests
+cargo test           # unit + property + golden + hostile-input + MCP loopback
 cargo clippy         # lints (CI runs with -D warnings)
 ```
 
