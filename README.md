@@ -92,12 +92,20 @@ so "it's only local" isn't a policy.
 
 **Plan assistant.** ⌘2 opens a prompt box: *"add a two-week QA phase after the
 backend work"*, *"push everything after the design sign-off out by a week"*.
-It runs against a model endpoint you configure in Preferences — Ollama or any
-OpenAI-compatible URL, local by default — and tangt sends your plan to that
-endpoint and nowhere else.
-The model gets the same tools, so it can only change the chart in ways the
-editor itself allows: a dependency cycle is refused, an unknown task id comes
-back as an error it can read and correct.
+
+The model runs **on your machine**. tangt ships with a llama.cpp engine built
+in; pick a model in Preferences ▸ Assistant and it downloads once (1–2.5 GB,
+verified against a checksum) — no server to install, no account, nothing sent
+off the machine. If you already run Ollama or something OpenAI-compatible, you
+can point it there instead.
+
+The model gets the same tools as MCP, so it can only change the chart in ways
+the editor itself allows: a dependency cycle is refused, an unknown task id
+comes back as an error it can read and correct.
+
+Weights are not part of tangt and carry their own licence (the catalogue's
+models are Apache-2.0). Builds without a C++ toolchain can use
+`--no-default-features` to drop the engine and rely on an endpoint.
 
 ## Building
 

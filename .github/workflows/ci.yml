@@ -34,3 +34,6 @@ jobs:
             libxcb-shape0-dev libxcb-xfixes0-dev
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --locked -- -D warnings
+      # The engine is optional; a build without it must keep working, since
+      # that is the fallback when a C++ toolchain is unavailable.
+      - run: cargo clippy -p tangt-app --locked --no-default-features -- -D warnings

@@ -8,10 +8,19 @@ license.workspace = true
 name = "tangt"
 path = "src/main.rs"
 
+[features]
+default = ["builtin-llm"]
+# The in-process model engine. Pulls in a C++ toolchain build; without it the
+# assistant still works against Ollama or an OpenAI-compatible endpoint.
+builtin-llm = ["dep:llama-cpp-2"]
+
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+directories = "6.0.0"
 eframe = { version = "0.35.0", features = ["persistence"] }
 getrandom = "0.3"
+llama-cpp-2 = { version = "=0.1.154", default-features = false, optional = true }
+sha2 = "0.11.0"
 resvg = "0.48.1"
 rfd = "0.17.2"
 rmcp = { version = "3.1", features = [

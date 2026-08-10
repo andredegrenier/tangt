@@ -17,12 +17,16 @@ pub enum ModelError {
     Unreachable(String),
     /// The model replied, but not in a shape we could use.
     Read(String),
+    /// The chosen backend cannot run: not downloaded, or not in this build.
+    Unavailable(String),
 }
 
 impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModelError::Unreachable(m) | ModelError::Read(m) => f.write_str(m),
+            ModelError::Unreachable(m) | ModelError::Read(m) | ModelError::Unavailable(m) => {
+                f.write_str(m)
+            }
         }
     }
 }
@@ -109,22 +113,31 @@ pub trait ModelBackend: Send {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Api {
+    /// A model tangt downloaded and runs itself — no server to install.
+    Builtin,
     Ollama,
     OpenAiCompatible,
 }
 
 impl Api {
+    pub const ALL: [Api; 3] = [Api::Builtin, Api::Ollama, Api::OpenAiCompatible];
+
     pub fn default_url(self) -> &'static str {
         match self {
+            Api::Builtin => "",
             Api::Ollama => "http://localhost:11434",
             Api::OpenAiCompatible => "http://localhost:8080",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
+            Api::Builtin => "Built in (runs on this machine)",
             Api::Ollama => "Ollama",
             Api::OpenAiCompatible => "OpenAI-compatible",
         }
+    }
+    pub fn is_builtin(self) -> bool {
+        matches!(self, Api::Builtin)
     }
 }
 
@@ -138,11 +151,12 @@ pub struct ModelConfig {
 
 impl Default for ModelConfig {
     fn default() -> Self {
+        // Built in by default: a fresh install can use the assistant after one
+        // download, with no server to set up.
         ModelConfig {
-            api: Api::Ollama,
-            base_url: Api::Ollama.default_url().to_string(),
-            // A small instruct model most Ollama users already have.
-            model: "qwen2.5:7b-instruct".to_string(),
+            api: Api::Builtin,
+            base_url: String::new(),
+            model: super::catalog::DEFAULT_MODEL.to_string(),
             timeout_secs: 120,
         }
     }
@@ -150,8 +164,43 @@ impl Default for ModelConfig {
 
 impl ModelConfig {
     pub fn build(&self) -> Box<dyn ModelBackend> {
-        Box::new(HttpBackend { config: self.clone() })
+        match self.api {
+            Api::Builtin => builtin(&self.model),
+            _ => Box::new(HttpBackend { config: self.clone() }),
+        }
     }
+}
+
+#[cfg(feature = "builtin-llm")]
+fn builtin(model_id: &str) -> Box<dyn ModelBackend> {
+    Box::new(super::builtin::BuiltinBackend::new(model_id))
+}
+
+/// The twin for builds without the engine: the setting still exists, and
+/// choosing it fails with a sentence rather than something obscure.
+#[cfg(not(feature = "builtin-llm"))]
+fn builtin(_model_id: &str) -> Box<dyn ModelBackend> {
+    struct Unavailable;
+    impl ModelBackend for Unavailable {
+        fn generate(
+            &self,
+            _req: &GenerateRequest,
+            _on_token: &mut dyn FnMut(&str) -> ControlFlow<()>,
+        ) -> Result<GenerateOutcome, ModelError> {
+            Err(ModelError::Unavailable(
+                "this build of tangt has no built-in model engine; point the assistant at \
+                 Ollama or an OpenAI-compatible endpoint instead"
+                    .to_owned(),
+            ))
+        }
+        fn list_models(&self) -> Result<Vec<String>, ModelError> {
+            Ok(Vec::new())
+        }
+        fn describe(&self) -> String {
+            "built-in engine not compiled in".to_owned()
+        }
+    }
+    Box::new(Unavailable)
 }
 
 pub struct HttpBackend {
@@ -210,7 +259,9 @@ impl HttpBackend {
                 }
                 body["options"] = options;
             }
-            Api::OpenAiCompatible => {
+            // Builtin never reaches HttpBackend; grouped so the match stays
+            // exhaustive without a catch-all that could hide a real variant.
+            Api::OpenAiCompatible | Api::Builtin => {
                 if let Some(t) = req.temperature {
                     body["temperature"] = json!(t);
                 }
@@ -234,7 +285,7 @@ struct Chunk {
 fn parse_chunk(api: Api, line: &str) -> Option<Chunk> {
     let raw = match api {
         Api::Ollama => line.trim(),
-        Api::OpenAiCompatible => {
+        Api::OpenAiCompatible | Api::Builtin => {
             let data = line.strip_prefix("data:")?.trim();
             if data == "[DONE]" {
                 return Some(Chunk { done: true, ..Default::default() });
@@ -252,7 +303,7 @@ fn parse_chunk(api: Api, line: &str) -> Option<Chunk> {
             chunk.done = value.get("done").and_then(Value::as_bool).unwrap_or(false);
             value.get("message").cloned()
         }
-        Api::OpenAiCompatible => value
+        Api::OpenAiCompatible | Api::Builtin => value
             .get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("delta").or_else(|| c.get("message")))
@@ -289,7 +340,7 @@ impl ModelBackend for HttpBackend {
     ) -> Result<GenerateOutcome, ModelError> {
         let path = match self.config.api {
             Api::Ollama => "api/chat",
-            Api::OpenAiCompatible => "v1/chat/completions",
+            Api::OpenAiCompatible | Api::Builtin => "v1/chat/completions",
         };
         let response = self
             .agent()
@@ -327,7 +378,7 @@ impl ModelBackend for HttpBackend {
     fn list_models(&self) -> Result<Vec<String>, ModelError> {
         let path = match self.config.api {
             Api::Ollama => "api/tags",
-            Api::OpenAiCompatible => "v1/models",
+            Api::OpenAiCompatible | Api::Builtin => "v1/models",
         };
         let mut response = self.agent().get(self.url(path)).call().map_err(|e| {
             ModelError::Unreachable(format!(
@@ -351,7 +402,7 @@ impl ModelBackend for HttpBackend {
                         .collect()
                 })
                 .unwrap_or_default(),
-            Api::OpenAiCompatible => value
+            Api::OpenAiCompatible | Api::Builtin => value
                 .get("data")
                 .and_then(Value::as_array)
                 .map(|a| {

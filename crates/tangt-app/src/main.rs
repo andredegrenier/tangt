@@ -48,9 +48,14 @@ fn main() -> eframe::Result {
             .with_title("tangt"),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "tangt",
         options,
         Box::new(|cc| Ok(Box::new(app::TangtApp::new(cc)))),
-    )
+    );
+    // Model weights must be released before the process exits: llama.cpp's
+    // Metal backend tears down from a C++ static destructor and asserts that
+    // nothing still holds its buffers.
+    llm::unload();
+    result
 }

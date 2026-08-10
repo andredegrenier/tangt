@@ -6,11 +6,26 @@
 //! like the MCP bridge does.
 
 pub mod agent;
+#[cfg(feature = "builtin-llm")]
+pub mod builtin;
+pub mod catalog;
+pub mod download;
 pub mod model;
+/// Compiled whether or not the engine is: it is plain string handling, and the
+/// only description of the tool format the built-in model speaks.
+#[cfg_attr(not(feature = "builtin-llm"), allow(dead_code))]
+pub mod toolfmt;
+
+/// Let any cached weights go. Must run before the process exits — see
+/// [`builtin::unload`].
+pub fn unload() {
+    #[cfg(feature = "builtin-llm")]
+    builtin::unload();
+}
 
 use eframe::egui;
 use model::{
-    Api, ChatMessage, GenerateRequest, ModelConfig, ModelError, ToolCall, ToolDef,
+    Api, ChatMessage, GenerateRequest, ModelConfig, ToolCall, ToolDef,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,6 +92,8 @@ pub struct AssistEngine {
     /// Model names discovered from the endpoint, for the settings dropdown.
     pub available: Vec<String>,
     pub probe: Option<String>,
+    /// In-flight download, keyed by catalogue id.
+    download: Option<(&'static str, Arc<download::Progress>)>,
 }
 
 impl AssistEngine {
@@ -101,7 +118,28 @@ impl AssistEngine {
             draft: String::new(),
             available: Vec::new(),
             probe: None,
+            download: None,
         }
+    }
+
+    /// Start fetching a catalogue model on a background thread.
+    fn start_download(&mut self, entry: &'static catalog::CatalogEntry, ctx: &egui::Context) {
+        let Some(dir) = catalog::models_dir() else {
+            self.probe = Some("could not find tangt's data directory".into());
+            return;
+        };
+        let progress = Arc::new(download::Progress::default());
+        progress.total.store(entry.size(), Ordering::Relaxed);
+        self.download = Some((entry.id, progress.clone()));
+        let ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("tangt-model-download".into())
+            .spawn(move || {
+                let outcome = download::fetch(entry, &dir, &progress);
+                *progress.outcome.lock().expect("outcome lock") = Some(outcome);
+                ctx.request_repaint();
+            })
+            .expect("spawning the download thread");
     }
 
     pub fn ask(&self, job: AssistJob) {
@@ -188,7 +226,7 @@ fn worker(
                 Ok("(the assistant finished without a summary)".to_string())
             }
             Ok(outcome) => Ok(outcome.text),
-            Err(ModelError::Unreachable(m)) | Err(ModelError::Read(m)) => Err(m),
+            Err(e) => Err(e.to_string()),
         });
         drop(s);
         ctx.request_repaint();
@@ -200,23 +238,142 @@ impl AssistEngine {
     pub fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(
             "Describe a change in plain language and the assistant edits the chart with the \
-             same tools MCP exposes. Runs against a local model you choose — tangt never \
-             sends your plan anywhere else.",
+             same tools MCP exposes. It runs on the model you pick below; tangt sends your plan \
+             there and nowhere else.",
         );
         ui.add_space(6.0);
-        egui::ComboBox::from_label("Endpoint")
+        egui::ComboBox::from_label("Model runs on")
             .selected_text(self.prefs.config.api.label())
             .show_ui(ui, |ui| {
-                for api in [Api::Ollama, Api::OpenAiCompatible] {
+                for api in Api::ALL {
                     if ui
                         .selectable_label(self.prefs.config.api == api, api.label())
                         .clicked()
                     {
                         self.prefs.config.api = api;
                         self.prefs.config.base_url = api.default_url().to_string();
+                        if api.is_builtin() {
+                            self.prefs.config.model = catalog::DEFAULT_MODEL.to_string();
+                        }
+                        self.available.clear();
+                        self.probe = None;
                     }
                 }
             });
+
+        if self.prefs.config.api.is_builtin() {
+            self.builtin_ui(ui);
+        } else {
+            self.endpoint_ui(ui);
+        }
+        if let Some(probe) = &self.probe {
+            ui.weak(probe);
+        }
+    }
+
+    /// Catalogue rows: download, select, or remove a model tangt runs itself.
+    fn builtin_ui(&mut self, ui: &mut egui::Ui) {
+        if cfg!(not(feature = "builtin-llm")) {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xd3, 0x2f, 0x2f),
+                "This build has no built-in engine — choose Ollama or an OpenAI-compatible \
+                 endpoint instead.",
+            );
+            return;
+        }
+        let Some(dir) = catalog::models_dir() else {
+            ui.weak("could not find tangt's data directory");
+            return;
+        };
+
+        // Finished download? Report it once.
+        let mut finished = None;
+        if let Some((id, progress)) = &self.download {
+            if let Some(outcome) = progress.take_outcome() {
+                finished = Some((*id, outcome));
+            }
+        }
+        if let Some((id, outcome)) = finished {
+            self.download = None;
+            self.probe = Some(match outcome {
+                Ok(_) => {
+                    self.prefs.config.model = id.to_string();
+                    format!("{id} is ready")
+                }
+                Err(e) if e == "cancelled" => "download cancelled".into(),
+                Err(e) => format!("download failed: {e}"),
+            });
+        }
+
+        for entry in catalog::CATALOG.iter() {
+            let installed = entry.installed_in(&dir).is_some();
+            let downloading = self
+                .download
+                .as_ref()
+                .is_some_and(|(id, _)| *id == entry.id);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let selected = self.prefs.config.model == entry.id;
+                if ui
+                    .add_enabled(
+                        installed,
+                        egui::Button::new(entry.label).selected(selected),
+                    )
+                    .clicked()
+                {
+                    self.prefs.config.model = entry.id.to_string();
+                }
+                ui.weak(download::human_size(entry.size()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if downloading {
+                        if ui.button("Cancel").clicked() {
+                            if let Some((_, p)) = &self.download {
+                                p.cancel();
+                            }
+                        }
+                    } else if installed {
+                        if ui.button("Remove").clicked() {
+                            match catalog::delete_model(&dir, entry) {
+                                Ok(()) => self.probe = Some(format!("{} removed", entry.label)),
+                                Err(e) => self.probe = Some(format!("could not remove it: {e}")),
+                            }
+                        }
+                    } else if self.download.is_none() && ui.button("Download").clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.start_download(entry, &ctx);
+                    }
+                });
+            });
+            ui.weak(entry.summary);
+            if downloading {
+                if let Some((_, progress)) = &self.download {
+                    let fraction = progress.fraction();
+                    ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                    ui.weak(format!(
+                        "{} of {}",
+                        download::human_size(
+                            progress.downloaded.load(Ordering::Relaxed)
+                        ),
+                        download::human_size(progress.total.load(Ordering::Relaxed))
+                    ));
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.weak(entry.attribution);
+                ui.hyperlink_to("model card", entry.attribution_url);
+            });
+        }
+        ui.add_space(4.0);
+        let used = catalog::disk_usage(&dir);
+        ui.weak(format!(
+            "Weights are downloaded once and verified against a checksum. They are not part of \
+             tangt and carry their own licence. Currently using {} in {}.",
+            download::human_size(used),
+            dir.display()
+        ));
+    }
+
+    fn endpoint_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("URL");
             ui.add(
@@ -259,9 +416,6 @@ impl AssistEngine {
                         }
                     }
                 });
-        }
-        if let Some(probe) = &self.probe {
-            ui.weak(probe);
         }
     }
 }
