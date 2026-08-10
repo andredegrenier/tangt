@@ -33,6 +33,18 @@ impl Rgba {
     }
 }
 
+/// Black or white, whichever is readable on `fill` (relative-luminance test).
+/// Used for bar labels on screen and in every export.
+pub fn contrast_text(fill: Rgba) -> Rgba {
+    let [r, g, b, _] = fill.0;
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    if luma > 150.0 {
+        Rgba::rgb(0x1a, 0x20, 0x28)
+    } else {
+        Rgba::rgb(0xff, 0xff, 0xff)
+    }
+}
+
 pub trait TextMeasurer {
     /// Width/height of a single line of text at the given font size.
     fn measure(&self, text: &str, size: f32) -> [f32; 2];

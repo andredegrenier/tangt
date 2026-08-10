@@ -25,6 +25,7 @@ pub enum CanvasEvent {
     ResizeStart { id: TaskId, day: i64 },
     ResizeEnd { id: TaskId, day: i64 },
     CreateDep { from: TaskId, to: TaskId },
+    RemoveDep { task: TaskId, on: TaskId },
     Rename { id: TaskId, label: String },
     SetProgress { id: TaskId, pct: u8 },
     AddTask { anchor: Option<TaskId>, day: i64, milestone: bool },
@@ -64,7 +65,10 @@ pub struct CanvasState {
     /// Live (start, end) overrides during a drag.
     pub preview: HashMap<TaskId, (i64, i64)>,
     pub rename: Option<(TaskId, String)>,
+    pub rename_focused: bool,
     pub ctx_target: Option<CtxTarget>,
+    /// Live feedback line for the status bar ("Aug 17 → Aug 24 · 5d").
+    pub hint: Option<String>,
 }
 
 struct Regions {
@@ -173,9 +177,13 @@ pub fn show(
         }
         model.tasks.values().find_map(|t| {
             let r = screen_bars.get(&t.id)?;
-            let interactive = selection == Some(&t.id) || r.expand(2.0).contains(p);
-            if !interactive {
-                // Dep dot floats outside the bar; check it for the selection.
+            // Reach extends past the right edge so the dep dot stays live
+            // while the pointer travels from the bar to it.
+            let reach = Rect::from_min_max(
+                r.min - Vec2::splat(2.0),
+                Pos2::new(r.right() + DEP_DOT_OFFSET + DEP_DOT_R + 3.0, r.bottom() + 2.0),
+            );
+            if !reach.contains(p) {
                 return None;
             }
             if !t.milestone {
@@ -259,23 +267,50 @@ pub fn show(
                 if response.drag_delta() != Vec2::ZERO {
                     drag.moved = true;
                 }
+                // Sample ⌥ live so pressing it mid-drag works.
+                if let DragKind::Move { alt, .. } = &mut drag.kind {
+                    *alt = ui.input(|i| i.modifiers.alt);
+                }
                 let t = model.tasks.get(&drag.id).cloned();
                 if let Some(t) = t {
+                    let fmt = tangt_core::resolve::format_day;
                     match drag.kind {
-                        DragKind::Move { grab_offset, .. } => {
+                        DragKind::Move { grab_offset, alt } => {
                             let dur = t.end_day - t.start_day;
                             let new_start = pointer_day(p) - grab_offset;
                             state.preview.insert(t.id.clone(), (new_start, new_start + dur));
+                            let mode = if !t.deps.is_empty() {
+                                if alt {
+                                    " · detaching to a fixed date"
+                                } else {
+                                    " · adjusting lag (⌥ to detach)"
+                                }
+                            } else {
+                                ""
+                            };
+                            state.hint = Some(format!(
+                                "{} → {}{mode}",
+                                fmt(new_start),
+                                fmt(new_start + dur)
+                            ));
                         }
                         DragKind::ResizeR => {
                             let end = pointer_day(p).max(t.start_day);
                             state.preview.insert(t.id.clone(), (t.start_day, end));
+                            let n = model.calendar.working_days_between(t.start_day, end);
+                            state.hint = Some(format!("until {} · {n}d", fmt(end)));
                         }
                         DragKind::ResizeL => {
                             let start = pointer_day(p).min(t.end_day);
                             state.preview.insert(t.id.clone(), (start, t.end_day));
+                            let n = model.calendar.working_days_between(start, t.end_day);
+                            state.hint = Some(format!("starts {} · {n}d", fmt(start)));
                         }
-                        DragKind::Dep | DragKind::Reorder => {}
+                        DragKind::Dep => {
+                            state.hint =
+                                Some("Drop on a bar to make it start after this task".into());
+                        }
+                        DragKind::Reorder => {}
                     }
                 }
             } else if regions.chart.contains(p) {
@@ -473,15 +508,33 @@ pub fn show(
             };
             draw_arrow(&painter, *from, *to, theme.arrow);
         }
-        // Rubber band during a dependency drag.
+        // Rubber band during a dependency drag, highlighting the drop target.
         if let Some(drag) = &state.drag {
             if matches!(drag.kind, DragKind::Dep) {
+                let target = model.tasks.values().find(|t| {
+                    t.id != drag.id
+                        && screen_bars
+                            .get(&t.id)
+                            .is_some_and(|r| r.expand(4.0).contains(drag.pointer))
+                });
+                if let Some(t) = &target {
+                    if let Some(r) = screen_bars.get(&t.id) {
+                        painter.rect_stroke(
+                            r.expand(3.0),
+                            5.0,
+                            Stroke::new(2.0, theme.selection),
+                            StrokeKind::Middle,
+                        );
+                    }
+                }
                 if let Some(r) = screen_bars.get(&drag.id) {
                     let from = Pos2::new(r.right() + DEP_DOT_OFFSET, r.center().y);
-                    painter.line_segment(
-                        [from, drag.pointer],
-                        Stroke::new(1.5, theme.selection),
-                    );
+                    let stroke = if target.is_some() {
+                        Stroke::new(2.0, theme.selection)
+                    } else {
+                        Stroke::new(1.5, theme.selection.gamma_multiply(0.5))
+                    };
+                    painter.line_segment([from, drag.pointer], stroke);
                 }
             }
         }
@@ -549,16 +602,21 @@ pub fn show(
                         StrokeKind::Middle,
                     );
                 }
-                // Label inside if it fits, else to the right.
+                // Label inside if it fits (black/white by fill luminance),
+                // else to the right.
                 let galley =
                     painter.layout_no_wrap(t.label.clone(), label_font.clone(), theme.text);
                 if galley.size().x + 12.0 <= rect.width() {
+                    let [r, g, b, _] = fill.to_array();
+                    let inside_color = to_color32(tangt_core::geometry::contrast_text(
+                        tangt_core::geometry::Rgba::rgb(r, g, b),
+                    ));
                     painter.text(
                         Pos2::new(rect.left() + 6.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         &t.label,
                         label_font.clone(),
-                        theme.bar_label,
+                        inside_color,
                     );
                 } else {
                     painter.text(
@@ -728,32 +786,102 @@ pub fn show(
 
     // ---- inline rename ---------------------------------------------------
     if let Some((id, buffer)) = &mut state.rename {
-        let anchor = screen_bars
+        // Anchor near the bar when visible, else at the pointer; clamped into
+        // the chart region so it can't open under the pinned header/offscreen.
+        let raw = screen_bars
             .get(id)
-            .map(|r| r.left_top())
+            .map(|r| r.left_top() + Vec2::new(0.0, -34.0))
+            .filter(|p| regions.chart.expand(40.0).contains(*p))
+            .or(hover)
             .unwrap_or(regions.chart.left_top());
+        let anchor = Pos2::new(
+            raw.x.clamp(regions.chart.left(), regions.chart.right() - 220.0),
+            raw.y.clamp(regions.chart.top(), regions.chart.bottom() - 32.0),
+        );
         let mut commit = false;
         let mut cancel = false;
         egui::Window::new("rename-task")
             .title_bar(false)
             .resizable(false)
-            .fixed_pos(anchor + Vec2::new(0.0, -30.0))
+            .fixed_pos(anchor)
             .show(ui.ctx(), |ui| {
                 let resp = ui.text_edit_singleline(buffer);
-                resp.request_focus();
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if !state.rename_focused {
+                    resp.request_focus();
+                    state.rename_focused = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) || resp.lost_focus() {
                     commit = true;
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     cancel = true;
                 }
             });
-        if commit {
-            let (id, label) = state.rename.take().unwrap();
-            events.push(CanvasEvent::Rename { id, label });
-        } else if cancel {
+        if cancel {
             state.rename = None;
+            state.rename_focused = false;
+        } else if commit {
+            let (id, label) = state.rename.take().unwrap();
+            state.rename_focused = false;
+            events.push(CanvasEvent::Rename { id, label });
         }
+    } else {
+        state.rename_focused = false;
+    }
+
+    // ---- empty-state hint --------------------------------------------------
+    if model.tasks.is_empty() && state.drag.is_none() {
+        let painter = ui.painter_at(regions.chart);
+        let c = regions.chart.center();
+        painter.text(
+            c,
+            Align2::CENTER_CENTER,
+            "Right-click to add a task — or type in the editor:",
+            FontId::proportional(BASE_FONT_SIZE + 1.0),
+            theme.muted,
+        );
+        painter.text(
+            c + Vec2::new(0.0, 24.0),
+            Align2::CENTER_CENTER,
+            "task \"Design\" : d1, 2026-08-10, 5d        (⌘/ opens the reference)",
+            FontId::monospace(BASE_FONT_SIZE - 1.0),
+            theme.muted,
+        );
+    }
+
+    // ---- hover tooltip -----------------------------------------------------
+    if state.drag.is_none() {
+        if let Some((id, _)) = &hovered_bar {
+            if let Some(t) = model.tasks.get(id) {
+                let fmt = tangt_core::resolve::format_day;
+                let mut line = format!("{} · {} → {}", t.label, fmt(t.start_day), fmt(t.end_day));
+                if !t.milestone {
+                    line.push_str(&format!(
+                        " · {}d",
+                        model.calendar.working_days_between(t.start_day, t.end_day)
+                    ));
+                }
+                if let Some((pct, _)) = t.progress {
+                    line.push_str(&format!(" · {pct}%"));
+                }
+                for tag in &t.tags {
+                    line.push_str(&format!(" · {tag:?}").to_lowercase());
+                }
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    ui.layer_id(),
+                    egui::Id::new("bar-tip"),
+                    egui::PopupAnchor::Pointer,
+                )
+                .show(|ui| {
+                    ui.label(line);
+                });
+            }
+        }
+    }
+
+    if state.drag.is_none() {
+        state.hint = None;
     }
 
     events
@@ -786,6 +914,19 @@ fn context_menu(
                     for pct in [0u8, 25, 50, 75, 100] {
                         if ui.button(format!("{pct}%")).clicked() {
                             events.push(CanvasEvent::SetProgress { id: id.clone(), pct });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if !t.deps.is_empty() {
+                ui.menu_button("Dependencies", |ui| {
+                    for dep in &t.deps {
+                        if ui.button(format!("Remove “after {}”", dep.on)).clicked() {
+                            events.push(CanvasEvent::RemoveDep {
+                                task: id.clone(),
+                                on: dep.on.clone(),
+                            });
                             ui.close();
                         }
                     }

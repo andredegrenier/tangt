@@ -1,0 +1,67 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: tangt-windows-x86_64
+            binary: tangt.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: tangt-macos-arm64
+            binary: tangt
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: tangt-macos-x86_64
+            binary: tangt
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: tangt-linux-x86_64
+            binary: tangt
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev
+      - run: cargo build --release --target ${{ matrix.target }} -p tangt-app
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.artifact }}/
+          cp README.md LICENSE examples/website-redesign.tangt dist/${{ matrix.artifact }}/
+          cd dist && zip -r ${{ matrix.artifact }}.zip ${{ matrix.artifact }}
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/${{ matrix.artifact }}
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.artifact }}/
+          Copy-Item README.md,LICENSE,examples/website-redesign.tangt dist/${{ matrix.artifact }}/
+          Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
+      - uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          files: dist/${{ matrix.artifact }}.zip
+          generate_release_notes: true

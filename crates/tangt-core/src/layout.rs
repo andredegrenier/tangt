@@ -68,9 +68,13 @@ impl GanttLayout {
 }
 
 pub fn compute(model: &GanttModel, measurer: &dyn TextMeasurer, px_per_day: f32) -> GanttLayout {
+    use crate::resolve::{MAX_DAY, MIN_DAY};
+    // Keep the padded scale strictly inside jiff's range so tick/month
+    // date formatting never saturates (a saturating `date_of` otherwise
+    // stalls the month-band walk at the boundary).
     let scale = TimeScale {
-        min_day: model.min_day - PAD_DAYS,
-        max_day: model.max_day + PAD_DAYS + 1,
+        min_day: (model.min_day - PAD_DAYS).clamp(MIN_DAY, MAX_DAY - 1),
+        max_day: (model.max_day + PAD_DAYS + 1).clamp(MIN_DAY + 1, MAX_DAY),
         px_per_day,
     };
 
@@ -189,13 +193,15 @@ pub fn compute(model: &GanttModel, measurer: &dyn TextMeasurer, px_per_day: f32)
 
     // ---- month bands -----------------------------------------------------
     let mut months = Vec::new();
-    let mut m = month_start(scale.min_day).max(scale.min_day);
     // First (possibly partial) month starts at the range start.
     months.push((scale.min_day, month_label(scale.min_day)));
+    let mut m = scale.min_day;
+    // Each step advances into the next month; the strictly-increasing guard is
+    // a backstop in case boundary clamping ever makes the hop stall.
     loop {
-        m = month_start(m) + 45; // hop into the next month
-        let start = month_start(m);
-        if start > scale.max_day {
+        let next = month_start(m) + 45; // hop past the current month
+        let start = month_start(next);
+        if start > scale.max_day || start <= m {
             break;
         }
         months.push((start, month_label(start)));

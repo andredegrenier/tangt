@@ -16,6 +16,17 @@ use std::collections::{HashMap, HashSet};
 /// Longest holiday range we will expand, in days.
 const MAX_EXCLUDE_RANGE: i64 = 3660;
 
+/// jiff's representable civil-date window as day numbers (years -9999..9999).
+/// Every resolved day is clamped into it so hostile files can neither panic
+/// date formatting nor drive unbounded loops downstream.
+pub const MIN_DAY: i64 = -4_371_587;
+pub const MAX_DAY: i64 = 2_932_896;
+/// Longest span a single task may cover (~200 years) and the cap between a
+/// dependency end and its successor (lag clamp).
+pub const MAX_TASK_SPAN: i64 = 73_000;
+/// Longest total chart range; keeps per-frame tick generation bounded.
+pub const MAX_CHART_SPAN: i64 = 73_000;
+
 fn epoch() -> Date {
     Date::constant(1970, 1, 1)
 }
@@ -24,10 +35,11 @@ pub fn day_of(date: Date) -> i64 {
     (date - epoch()).get_days() as i64
 }
 
+/// Total function: out-of-range day numbers saturate to jiff's bounds.
 pub fn date_of(day: i64) -> Date {
     epoch()
-        .checked_add(jiff::Span::new().days(day))
-        .expect("day number out of jiff range")
+        .checked_add(jiff::Span::new().days(day.clamp(MIN_DAY, MAX_DAY)))
+        .expect("clamped day is always in range")
 }
 
 /// Format a day number as the DSL's `YYYY-MM-DD`.
@@ -214,7 +226,11 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
         let start = match &t.start {
             Some(StartField::Date(lit)) => date(lit, &mut diags).unwrap_or(today),
             Some(StartField::After(after)) => {
-                let lag = after.lag.as_ref().map_or(0, |l| l.sign * l.unit.days(l.n));
+                let lag = after
+                    .lag
+                    .as_ref()
+                    .map_or(0, |l| l.sign.saturating_mul(l.unit.days(l.n)))
+                    .clamp(-MAX_TASK_SPAN, MAX_TASK_SPAN);
                 let base = after
                     .ids
                     .iter()
@@ -238,7 +254,8 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
             start
         } else {
             calendar.snap_forward(start)
-        };
+        }
+        .clamp(MIN_DAY, MAX_DAY);
 
         let end = if t.milestone {
             start
@@ -261,7 +278,8 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
             }
         };
         start_days[i] = start;
-        end_days[i] = end;
+        // A task may span at most MAX_TASK_SPAN days and must stay in range.
+        end_days[i] = end.clamp(start, start.saturating_add(MAX_TASK_SPAN).min(MAX_DAY));
     }
 
     // ---- assemble ------------------------------------------------------
@@ -346,7 +364,9 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
     } else {
         let min = tasks.values().map(|t| t.start_day).min().unwrap();
         let max = tasks.values().map(|t| t.end_day).max().unwrap();
-        (min, max)
+        // Cap the total chart range so per-frame layout stays bounded no
+        // matter what dates a file contains.
+        (min, max.min(min.saturating_add(MAX_CHART_SPAN)))
     };
 
     GanttModel {

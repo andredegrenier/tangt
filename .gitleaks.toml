@@ -1,0 +1,12 @@
+# gitleaks configuration — extends the built-in default ruleset.
+# https://github.com/gitleaks/gitleaks#configuration
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Build artifacts and rendered exports (never tracked, but keep `gitleaks dir` clean)"
+paths = [
+    '''^target/''',
+    '''(^|/)\.DS_Store$''',
+]

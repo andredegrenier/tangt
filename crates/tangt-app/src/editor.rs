@@ -122,18 +122,27 @@ fn highlight(src: &str, diags: &[(Span, Severity)], colors: &TokenColors) -> Lay
         if text.is_empty() {
             return;
         }
-        let underline = diags
+        let diag = diags
             .iter()
             .find(|(s, _)| s.start < range.1 && range.0 < s.end.max(s.start + 1))
-            .map(|(_, sev)| match sev {
-                Severity::Error => Stroke::new(1.5, colors.diagnostic),
-                Severity::Warning => Stroke::new(1.0, colors.warning),
-            })
-            .unwrap_or(Stroke::NONE);
+            .map(|(_, sev)| *sev);
+        // Underline plus a faint background tint so errors don't hinge on
+        // spotting a 1.5px squiggle.
+        let (underline, background) = match diag {
+            Some(Severity::Error) => (
+                Stroke::new(1.5, colors.diagnostic),
+                colors.diagnostic.gamma_multiply(0.12),
+            ),
+            Some(Severity::Warning) => (
+                Stroke::new(1.0, colors.warning),
+                colors.warning.gamma_multiply(0.10),
+            ),
+            None => (Stroke::NONE, egui::Color32::TRANSPARENT),
+        };
         job.append(
             text,
             0.0,
-            TextFormat { font_id: font.clone(), color, underline, ..Default::default() },
+            TextFormat { font_id: font.clone(), color, underline, background, ..Default::default() },
         );
     };
 

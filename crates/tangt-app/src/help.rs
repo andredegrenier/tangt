@@ -1,4 +1,4 @@
-//! In-app syntax reference (⌘/).
+//! In-app syntax reference (⌘/ / Ctrl+/ / F1).
 
 use eframe::egui;
 
@@ -12,10 +12,12 @@ impl HelpWindow {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
+        let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+        let (cmd, shift, alt) = if mac { ("⌘", "⇧", "⌥") } else { ("Ctrl+", "Shift+", "Alt+") };
         let mut open = self.open;
         egui::Window::new("tangt reference")
             .open(&mut open)
-            .default_width(520.0)
+            .default_width(560.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Syntax");
@@ -25,15 +27,26 @@ impl HelpWindow {
                     ui.monospace(FIELDS);
                     ui.separator();
                     ui.heading("Mouse");
-                    ui.label("Drag bar: move · drag edges: resize · drag the dot at a bar's right edge onto another bar: dependency");
-                    ui.label("Double-click bar: rename · double-click gutter: jump to source · drag gutter row: reorder");
-                    ui.label("Right-click: add/delete tasks and sections, set progress");
-                    ui.label("Scroll: rows · Shift+scroll: pan time · pinch / ⌘scroll: zoom time");
+                    ui.label("Drag bar: move (keeps `after` dependencies, adjusting lag)");
+                    ui.label(format!("{alt}drag bar: detach dependencies and set a fixed date"));
+                    ui.label("Drag bar edges: resize duration");
+                    ui.label("Drag the dot at a bar's right edge onto another bar: create a dependency");
+                    ui.label("Double-click a bar: rename · double-click gutter: jump to source");
+                    ui.label("Drag a gutter row up/down: reorder tasks");
+                    ui.label("Right-click bar/gutter/empty space: add, delete, progress, dependencies");
+                    ui.label("Drag empty chart space: pan · scroll: rows · horizontal scroll: pan time");
+                    ui.label(format!("Pinch / {cmd}scroll: zoom time around the pointer"));
                     ui.separator();
                     ui.heading("Keyboard");
-                    ui.label("←/→: move selected task ±1 day (⇧: ±1 week) · ⌥←/→: resize");
-                    ui.label("F: fit chart · ⌘J: jump canvas↔text · ⌘Z/⌘⇧Z: undo/redo");
-                    ui.label("⌘1: editor pane · ⌘⇧L: swap editor side · ⌘/: this window");
+                    ui.label("↑/↓: select previous/next task");
+                    ui.label(format!("←/→: move selected task ±1 day ({shift}: ±1 week)"));
+                    ui.label(format!("{alt}←/→: resize selected task"));
+                    ui.label("Enter: rename selected · Delete: delete selected · Esc: deselect");
+                    ui.label(format!("F: fit chart · {cmd}J: reveal task under the text cursor"));
+                    ui.label(format!("{cmd}Z / {cmd}{shift}Z: undo/redo (canvas and text share one history)"));
+                    ui.label(format!("{cmd}1: editor pane · {cmd}{shift}L: swap editor side"));
+                    ui.label(format!("{cmd}+ / {cmd}−: UI zoom (larger/smaller interface)"));
+                    ui.label(format!("{cmd}/ or F1: this window"));
                 });
             });
         self.open = open;
