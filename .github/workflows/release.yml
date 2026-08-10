@@ -72,7 +72,9 @@ jobs:
         shell: pwsh
         run: |
           $h = (Get-FileHash dist/${{ matrix.artifact }}.zip -Algorithm SHA256).Hash.ToLower()
-          "$h  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii dist/${{ matrix.artifact }}.zip.sha256
+          # LF, not Out-File's CRLF: a trailing \r makes the filename unmatchable
+          # for `shasum -c` on macOS/Linux.
+          [IO.File]::WriteAllText("dist/${{ matrix.artifact }}.zip.sha256", "$h  ${{ matrix.artifact }}.zip`n")
       # Signed provenance: `gh attestation verify <zip> -R andredegrenier/tangt`
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
