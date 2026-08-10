@@ -1,0 +1,19 @@
+[package]
+name = "tangt-app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tangt"
+path = "src/main.rs"
+
+[dependencies]
+directories = "6.0.0"
+eframe = { version = "0.35.0", features = ["persistence"] }
+resvg = "0.48.1"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+svg2pdf = "0.13"
+tangt-core = { path = "../tangt-core" }
