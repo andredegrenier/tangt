@@ -107,7 +107,7 @@ impl TangtApp {
             doc,
             path: None,
             layout,
-            camera: persisted.camera.unwrap_or_default(),
+            camera: persisted.camera.unwrap_or_default().sanitized(),
             editor: EditorPane::new(),
             help: crate::help::HelpWindow::new(),
             canvas_state: CanvasState::default(),

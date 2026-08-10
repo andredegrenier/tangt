@@ -502,11 +502,18 @@ fn parse_duration(text: &str) -> (i64, Unit) {
     (n, unit)
 }
 
+/// Longest label we keep. The renderer measures and lays out labels several
+/// times per task per frame, so an absurdly long one is a per-frame cost.
+const MAX_LABEL_CHARS: usize = 512;
+
 fn unquote(raw: &str) -> String {
     let inner = &raw[1..raw.len() - 1];
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
+        if out.chars().count() >= MAX_LABEL_CHARS {
+            break;
+        }
         if c == '\\' {
             if let Some(next) = chars.next() {
                 out.push(next);

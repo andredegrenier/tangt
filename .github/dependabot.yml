@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Without this, the SHA-pinned actions in .github/workflows would never be
+  # bumped — correct pinning would decay into stale pinning.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly

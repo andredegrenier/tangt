@@ -15,6 +15,10 @@ use std::collections::{HashMap, HashSet};
 
 /// Longest holiday range we will expand, in days.
 const MAX_EXCLUDE_RANGE: i64 = 3660;
+/// Total excluded days we will hold. Bounds both memory and every day-by-day
+/// loop in `Calendar` — without it, many chained ranges amplify a small file
+/// into a multi-second reparse on every keystroke.
+const MAX_HOLIDAYS: usize = 20_000;
 
 /// jiff's representable civil-date window as day numbers (years -9999..9999).
 /// Every resolved day is clamped into it so hostile files can neither panic
@@ -102,7 +106,14 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
                 ExcludeKind::Weekends => calendar.exclude_weekends = true,
                 ExcludeKind::Date(lit) => {
                     if let Some(d) = date(lit, &mut diags) {
-                        calendar.holidays.insert(d);
+                        if calendar.holidays.len() < MAX_HOLIDAYS {
+                            calendar.holidays.insert(d);
+                        } else {
+                            diags.push(Diagnostic::error(
+                                lit.span,
+                                format!("too many excluded days in this file (limit {MAX_HOLIDAYS})"),
+                            ));
+                        }
                     }
                 }
                 ExcludeKind::Range(a, b) => {
@@ -116,6 +127,11 @@ pub fn resolve(ast: &Ast, today_fallback: i64) -> GanttModel {
                             diags.push(Diagnostic::error(
                                 a.span.merge(b.span),
                                 "exclude range is longer than ten years",
+                            ));
+                        } else if calendar.holidays.len() + (db - da + 1) as usize > MAX_HOLIDAYS {
+                            diags.push(Diagnostic::error(
+                                a.span.merge(b.span),
+                                format!("too many excluded days in this file (limit {MAX_HOLIDAYS})"),
                             ));
                         } else {
                             calendar.holidays.extend(da..=db);
