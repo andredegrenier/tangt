@@ -9,10 +9,23 @@ name = "tangt"
 path = "src/main.rs"
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 eframe = { version = "0.35.0", features = ["persistence"] }
+getrandom = "0.3"
 resvg = "0.48.1"
 rfd = "0.17.2"
+rmcp = { version = "3.1", features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+    "transport-io",
+] }
+schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 svg2pdf = "0.13"
 tangt-core = { path = "../tangt-core", version = "0.1.0" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-std"] }
+tokio-util = "0.7"
+ureq = { version = "3.3", features = ["json"] }

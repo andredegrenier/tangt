@@ -5,7 +5,10 @@ use tangt_core::geometry::MonoMeasurer;
 use tangt_core::parser::parse;
 use tangt_core::resolve::{parse_date, resolve};
 
+// Included directly rather than through the binary crate; the file-dialog
+// helper has no caller in this context.
 #[path = "../src/export.rs"]
+#[allow(dead_code)]
 mod export;
 
 const EXAMPLE: &str = include_str!("../../../examples/website-redesign.tangt");

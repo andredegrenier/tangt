@@ -174,6 +174,43 @@ pub fn resize_start(model: &GanttModel, task: &Task, new_start: i64) -> Vec<Text
     }
 }
 
+/// Set start and end together, as one edit batch.
+///
+/// The canvas only ever moves *or* resizes, so `move_task` + `resize_end`
+/// suffice there; a programmatic caller (tools, assistant) sets a whole span,
+/// and the duration must be measured from the *new* start, not the old one.
+pub fn set_span(model: &GanttModel, task: &Task, new_start: i64, new_end: i64) -> Vec<TextEdit> {
+    let new_end = new_end.max(new_start);
+    let mut edits = move_task_to_date(task, new_start);
+    match &task.dur_src {
+        DurSrc::Until { span } => {
+            edits.push(TextEdit::new(span.start, span.end, format_day(new_end)));
+        }
+        DurSrc::Duration { span } => {
+            let n = model.calendar.working_days_between(new_start, new_end);
+            edits.push(TextEdit::new(span.start, span.end, format!("{n}d")));
+        }
+        DurSrc::Implicit => {
+            let n = model.calendar.working_days_between(new_start, new_end);
+            let dur = format!(", {n}d");
+            // Both fields may insert at the same offset; merge so field order
+            // comes out right and the batch has no overlapping edits.
+            match edits
+                .iter_mut()
+                .find(|e| e.start == task.insert_field_at && e.end == e.start)
+            {
+                Some(insert) => insert.insert.push_str(&dur),
+                None => edits.push(TextEdit::new(
+                    task.insert_field_at,
+                    task.insert_field_at,
+                    dur,
+                )),
+            }
+        }
+    }
+    edits
+}
+
 // ---- simple field edits ------------------------------------------------
 
 pub fn rename(task: &Task, new_label: &str) -> Vec<TextEdit> {

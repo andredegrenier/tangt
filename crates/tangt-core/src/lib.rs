@@ -4,6 +4,7 @@ pub mod geometry;
 pub mod layout;
 pub mod lexer;
 pub mod timescale;
+pub mod tools;
 pub mod model;
 pub mod parser;
 pub mod ops;

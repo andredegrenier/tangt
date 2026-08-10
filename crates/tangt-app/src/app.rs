@@ -29,6 +29,7 @@ const SC_EDITOR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Ke
 const SC_SWAP: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::L);
 const SC_HELP: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Slash);
+const SC_ASSIST: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num2);
 
 /// Action deferred behind the unsaved-changes confirmation.
 #[derive(Clone)]
@@ -60,6 +61,10 @@ struct Persisted {
     show_editor: bool,
     editor_on_left: bool,
     camera: Option<GanttCamera>,
+    #[serde(default)]
+    mcp: crate::mcp::McpPrefs,
+    #[serde(default)]
+    assist: crate::llm::AssistPrefs,
 }
 
 impl Default for Persisted {
@@ -70,6 +75,8 @@ impl Default for Persisted {
             show_editor: true,
             editor_on_left: true,
             camera: None,
+            mcp: crate::mcp::McpPrefs::default(),
+            assist: crate::llm::AssistPrefs::default(),
         }
     }
 }
@@ -91,6 +98,12 @@ pub struct TangtApp {
     fit_requested: bool,
     status: String,
     last_title: String,
+    // --- MCP ---
+    mcp_prefs: crate::mcp::McpPrefs,
+    mcp_server: Option<crate::mcp::runtime::McpServer>,
+    mcp_rx: Option<std::sync::mpsc::Receiver<crate::mcp::bridge::AppCommand>>,
+    show_prefs: bool,
+    assist: crate::llm::AssistEngine,
 }
 
 impl TangtApp {
@@ -120,6 +133,11 @@ impl TangtApp {
             fit_requested,
             status: String::new(),
             last_title: String::new(),
+            mcp_prefs: persisted.mcp,
+            mcp_server: None,
+            mcp_rx: None,
+            show_prefs: false,
+            assist: crate::llm::AssistEngine::spawn(&cc.egui_ctx, persisted.assist),
         };
         if let Some(path) = persisted.last_file.clone() {
             app.load(path);
@@ -157,6 +175,265 @@ impl TangtApp {
             }
             Err(e) => self.status = format!("Save failed: {e}"),
         }
+    }
+
+    /// Start, stop, or restart the MCP server so it matches the prefs.
+    fn reconcile_mcp(&mut self, ctx: &egui::Context) {
+        let running = self
+            .mcp_server
+            .as_ref()
+            .map(|s| (s.port, s.token.clone()));
+        let wanted = self
+            .mcp_prefs
+            .server_enabled
+            .then(|| (self.mcp_prefs.port, self.mcp_prefs.token.clone()));
+        if running == wanted {
+            return;
+        }
+        // Drop first: `Drop` cancels and joins, so the port is free before we
+        // rebind it.
+        self.mcp_server = None;
+        if let Some((port, token)) = wanted {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let bridge =
+                std::sync::Arc::new(crate::mcp::bridge::AppBridge::new(tx, ctx.clone()));
+            self.mcp_rx = Some(rx);
+            self.mcp_server = Some(crate::mcp::runtime::McpServer::spawn(
+                bridge,
+                port,
+                token,
+                ctx.clone(),
+            ));
+        } else {
+            self.mcp_rx = None;
+        }
+    }
+
+    /// Tool definitions handed to the model — same set, same descriptions as
+    /// MCP, generated from one place so the two can't drift.
+    fn assist_tools(&self) -> Vec<crate::llm::model::ToolDef> {
+        use serde_json::json;
+        let s = |props: serde_json::Value, required: &[&str]| {
+            json!({ "type": "object", "properties": props, "required": required })
+        };
+        vec![
+            crate::llm::model::ToolDef {
+                name: "list_tasks".into(),
+                description: "List every task with id, label, start, end, duration in working \
+                    days, progress, dependencies and tags. Call this before editing."
+                    .into(),
+                schema: s(json!({}), &[]),
+            },
+            crate::llm::model::ToolDef {
+                name: "add_task".into(),
+                description: "Add a task or milestone to the end of the chart.".into(),
+                schema: s(
+                    json!({
+                        "label": {"type": "string", "description": "Label shown on the bar"},
+                        "start": {"type": "string", "description": "Start date YYYY-MM-DD; omit when using after"},
+                        "after": {"type": "array", "items": {"type": "string"}, "description": "Ids this task starts after"},
+                        "lag_days": {"type": "integer", "description": "Working days of slack after the predecessor"},
+                        "duration_days": {"type": "integer", "description": "Working days; defaults to 5"},
+                        "milestone": {"type": "boolean", "description": "Zero-length marker instead of a bar"}
+                    }),
+                    &["label"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "set_dates".into(),
+                description: "Reschedule a task: change its start, duration, or end date.".into(),
+                schema: s(
+                    json!({
+                        "id": {"type": "string"},
+                        "start": {"type": "string", "description": "YYYY-MM-DD"},
+                        "duration_days": {"type": "integer"},
+                        "end": {"type": "string", "description": "Inclusive end date YYYY-MM-DD"}
+                    }),
+                    &["id"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "rename_task".into(),
+                description: "Change a task's label.".into(),
+                schema: s(
+                    json!({"id": {"type": "string"}, "label": {"type": "string"}}),
+                    &["id", "label"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "set_progress".into(),
+                description: "Set a task's completion percentage, 0-100.".into(),
+                schema: s(
+                    json!({"id": {"type": "string"}, "percent": {"type": "integer"}}),
+                    &["id", "percent"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "add_dependency".into(),
+                description: "Make one task start after another finishes. Refused if it would \
+                    create a cycle."
+                    .into(),
+                schema: s(
+                    json!({"task": {"type": "string"}, "after": {"type": "string"}}),
+                    &["task", "after"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "remove_dependency".into(),
+                description: "Detach a dependency, keeping the task's current dates.".into(),
+                schema: s(
+                    json!({"task": {"type": "string"}, "on": {"type": "string"}}),
+                    &["task", "on"],
+                ),
+            },
+            crate::llm::model::ToolDef {
+                name: "delete_task".into(),
+                description: "Delete a task.".into(),
+                schema: s(json!({"id": {"type": "string"}}), &["id"]),
+            },
+            crate::llm::model::ToolDef {
+                name: "add_section".into(),
+                description: "Append a section heading that groups the tasks after it.".into(),
+                schema: s(json!({"label": {"type": "string"}}), &["label"]),
+            },
+        ]
+    }
+
+    /// Run one assistant tool call against the document.
+    fn run_assist_tool(&mut self, call: &crate::llm::model::ToolCall) -> Result<String, String> {
+        use tangt_core::tools;
+        let a = &call.arguments;
+        let str_arg = |key: &str| -> Result<String, String> {
+            a.get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("{} needs a \"{key}\" string", call.name))
+        };
+        let result = match call.name.as_str() {
+            "list_tasks" => tools::list_tasks(self.doc.model()),
+            "get_source" => tools::get_source(self.doc.text()),
+            "add_task" => {
+                let args: tools::AddTaskArgs = serde_json::from_value(a.clone())
+                    .map_err(|e| format!("add_task arguments were not usable: {e}"))?;
+                tools::add_task(self.doc.model(), self.doc.text(), args)
+            }
+            "set_dates" => {
+                let args: tools::SetDatesArgs = serde_json::from_value(a.clone())
+                    .map_err(|e| format!("set_dates arguments were not usable: {e}"))?;
+                tools::set_dates(self.doc.model(), args)
+            }
+            "rename_task" => {
+                tools::rename_task(self.doc.model(), &str_arg("id")?, &str_arg("label")?)
+            }
+            "set_progress" => {
+                let pct = a
+                    .get("percent")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("set_progress needs an integer \"percent\"")?;
+                tools::set_progress(self.doc.model(), &str_arg("id")?, pct)
+            }
+            "add_dependency" => {
+                tools::add_dependency(self.doc.model(), &str_arg("task")?, &str_arg("after")?)
+            }
+            "remove_dependency" => tools::remove_dependency(
+                self.doc.model(),
+                self.doc.text(),
+                &str_arg("task")?,
+                &str_arg("on")?,
+            ),
+            "delete_task" => {
+                tools::delete_task(self.doc.model(), self.doc.text(), &str_arg("id")?)
+            }
+            "add_section" => tools::add_section(self.doc.text(), &str_arg("label")?),
+            other => Err(format!(
+                "there is no tool called \"{other}\"; the chart tools are: {}",
+                tools::TOOL_NAMES.join(", ")
+            )),
+        };
+        match result? {
+            tools::ToolOutcome::Read(value) => Ok(value.to_string()),
+            tools::ToolOutcome::Write { edits, intent, summary } => {
+                self.apply_op(edits, intent);
+                Ok(summary.to_string())
+            }
+        }
+    }
+
+    fn drain_assist(&mut self) {
+        let mut pending = Vec::new();
+        while let Ok(request) = self.assist.tool_rx.try_recv() {
+            pending.push(request);
+        }
+        for request in pending {
+            let answer = self.run_assist_tool(&request.call);
+            let _ = request.reply.send(answer);
+        }
+        if let Some(outcome) = self.assist.take_outcome() {
+            self.status = match outcome {
+                Ok(text) => format!("Assistant: {}", text.trim()),
+                Err(e) => format!("Assistant failed: {e}"),
+            };
+        }
+    }
+
+    /// Answer any MCP tool calls waiting on the UI thread.
+    fn drain_mcp(&mut self) {
+        let Some(rx) = &self.mcp_rx else { return };
+        // Collect first: handling needs `&mut self`.
+        let mut pending = Vec::new();
+        while let Ok(command) = rx.try_recv() {
+            pending.push(command);
+        }
+        for command in pending {
+            self.handle_mcp_command(command);
+        }
+    }
+
+    fn handle_mcp_command(&mut self, command: crate::mcp::bridge::AppCommand) {
+        use crate::mcp::bridge::AppCommand as C;
+        use tangt_core::tools;
+
+        // Each arm produces a ToolResult; applying is shared below.
+        let (reply, result) = match command {
+            C::ListTasks { reply } => (reply, tools::list_tasks(self.doc.model())),
+            C::GetSource { reply } => (reply, tools::get_source(self.doc.text())),
+            C::AddTask { args, reply } => (
+                reply,
+                tools::add_task(self.doc.model(), self.doc.text(), *args),
+            ),
+            C::SetDates { args, reply } => (reply, tools::set_dates(self.doc.model(), *args)),
+            C::RenameTask { id, label, reply } => {
+                (reply, tools::rename_task(self.doc.model(), &id, &label))
+            }
+            C::SetProgress { id, percent, reply } => {
+                (reply, tools::set_progress(self.doc.model(), &id, percent))
+            }
+            C::AddDependency { task, after, reply } => {
+                (reply, tools::add_dependency(self.doc.model(), &task, &after))
+            }
+            C::RemoveDependency { task, on, reply } => (
+                reply,
+                tools::remove_dependency(self.doc.model(), self.doc.text(), &task, &on),
+            ),
+            C::DeleteTask { id, reply } => (
+                reply,
+                tools::delete_task(self.doc.model(), self.doc.text(), &id),
+            ),
+            C::AddSection { label, reply } => {
+                (reply, tools::add_section(self.doc.text(), &label))
+            }
+        };
+
+        let answer = match result {
+            Ok(tools::ToolOutcome::Read(value)) => Ok(value),
+            Ok(tools::ToolOutcome::Write { edits, intent, summary }) => {
+                self.apply_op(edits, intent);
+                self.status = format!("MCP: {summary}");
+                Ok(summary)
+            }
+            Err(message) => Err(message),
+        };
+        let _ = reply.send(answer);
     }
 
     /// New/Open go through here so a dirty document always gets a
@@ -411,6 +688,9 @@ impl TangtApp {
         if consume(cmd, Key::Num1) {
             self.show_editor = !self.show_editor;
         }
+        if consume(cmd, Key::Num2) {
+            self.assist.prefs.show_panel = !self.assist.prefs.show_panel;
+        }
         if consume(cmd.plus(Modifiers::SHIFT), Key::L) {
             self.editor_on_left = !self.editor_on_left;
         }
@@ -515,6 +795,14 @@ impl TangtApp {
                         &mut self.show_editor,
                         format!("Editor pane   {}", ctx.format_shortcut(&SC_EDITOR)),
                     );
+                    ui.checkbox(
+                        &mut self.assist.prefs.show_panel,
+                        format!("Assistant   {}", ctx.format_shortcut(&SC_ASSIST)),
+                    );
+                    if ui.button("Preferences…").clicked() {
+                        self.show_prefs = true;
+                        ui.close();
+                    }
                     let swap_label = format!(
                         "{}   {}",
                         if self.editor_on_left { "Move editor right" } else { "Move editor left" },
@@ -544,6 +832,168 @@ impl TangtApp {
                 });
             });
         });
+    }
+
+    /// Compact description of the chart, so the model starts oriented instead
+    /// of spending its first turn on list_tasks.
+    fn chart_summary(&self) -> String {
+        let m = self.doc.model();
+        let mut out = String::new();
+        if let Some(title) = &m.title {
+            out.push_str(&format!("title: {title}\n"));
+        }
+        out.push_str(&format!(
+            "today: {}\nworking days exclude weekends: {}\n{} task(s):\n",
+            tangt_core::resolve::format_day(m.today),
+            m.calendar.exclude_weekends,
+            m.tasks.len()
+        ));
+        for t in m.tasks.values().take(60) {
+            out.push_str(&format!(
+                "  {} \"{}\" {} → {}{}{}\n",
+                t.id,
+                t.label,
+                tangt_core::resolve::format_day(t.start_day),
+                tangt_core::resolve::format_day(t.end_day),
+                if t.deps.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " after {}",
+                        t.deps.iter().map(|d| d.on.as_str()).collect::<Vec<_>>().join(" ")
+                    )
+                },
+                if t.milestone { " (milestone)" } else { "" },
+            ));
+        }
+        if m.tasks.len() > 60 {
+            out.push_str(&format!("  … and {} more\n", m.tasks.len() - 60));
+        }
+        out
+    }
+
+    fn assist_panel(&mut self, root: &mut egui::Ui) {
+        egui::Panel::bottom("assist")
+            .resizable(true)
+            .default_size(180.0)
+            .show(root, |ui| {
+                let running = self.assist.with_status(|s| s.running);
+                ui.horizontal(|ui| {
+                    ui.strong("Assistant");
+                    ui.weak(format!("· {}", self.assist.prefs.config.build().describe()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Settings…").clicked() {
+                            self.show_prefs = true;
+                        }
+                        if running && ui.button("Stop").clicked() {
+                            self.assist.cancel();
+                        }
+                    });
+                });
+
+                let (streaming, activity) = self
+                    .assist
+                    .with_status(|s| (s.streaming.clone(), s.activity.join(" · ")));
+                egui::ScrollArea::vertical()
+                    .max_height(90.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        if !activity.is_empty() {
+                            ui.weak(format!("tools: {activity}"));
+                        }
+                        if !streaming.is_empty() {
+                            ui.label(&streaming);
+                        } else if !running {
+                            ui.weak(
+                                "e.g. \"add a two-week QA phase after the backend work\" or \
+                                 \"push everything after the design sign-off out by a week\"",
+                            );
+                        }
+                    });
+
+                ui.horizontal(|ui| {
+                    let send = ui
+                        .add_enabled(
+                            !running,
+                            egui::TextEdit::singleline(&mut self.assist.draft)
+                                .hint_text("Describe a change to the plan…")
+                                .desired_width(ui.available_width() - 70.0),
+                        )
+                        .lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let clicked = ui.add_enabled(!running, egui::Button::new("Send")).clicked();
+                    if (send || clicked) && !self.assist.draft.trim().is_empty() {
+                        let job = crate::llm::AssistJob {
+                            prompt: std::mem::take(&mut self.assist.draft),
+                            chart_summary: self.chart_summary(),
+                            config: self.assist.prefs.config.clone(),
+                            tools: self.assist_tools(),
+                        };
+                        self.assist.ask(job);
+                    }
+                });
+            });
+    }
+
+    fn preferences(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_prefs;
+        egui::Window::new("Preferences")
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                ui.heading("MCP server");
+                ui.label(
+                    "Let an assistant read and edit this chart while it is open. Its edits go \
+                     through the same path as canvas edits, so ⌘Z undoes them.",
+                );
+                ui.add_space(6.0);
+                ui.checkbox(&mut self.mcp_prefs.server_enabled, "Serve on 127.0.0.1 (loopback only)");
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    ui.add(egui::DragValue::new(&mut self.mcp_prefs.port).range(1024..=65535));
+                    if ui.button("Regenerate token").clicked() {
+                        self.mcp_prefs.token = crate::mcp::new_token();
+                    }
+                });
+                match self.mcp_server.as_ref().map(|s| s.status()) {
+                    Some(status) if status.listening.is_some() => {
+                        ui.colored_label(
+                            Color32::from_rgb(0x2e, 0x7d, 0x32),
+                            format!("listening on 127.0.0.1:{}", status.listening.unwrap()),
+                        );
+                    }
+                    Some(status) if status.error.is_some() => {
+                        ui.colored_label(
+                            Color32::from_rgb(0xd3, 0x2f, 0x2f),
+                            status.error.unwrap_or_default(),
+                        );
+                    }
+                    _ => {
+                        ui.weak("not running");
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label("Client configuration:");
+                let mut config = self.mcp_prefs.client_config();
+                ui.add(
+                    egui::TextEdit::multiline(&mut config)
+                        .font(FontId::monospace(11.0))
+                        .desired_width(f32::INFINITY),
+                );
+                if ui.button("Copy config").clicked() {
+                    ctx.copy_text(self.mcp_prefs.client_config());
+                    self.status = "Copied MCP client config".into();
+                }
+                ui.add_space(4.0);
+                ui.weak(
+                    "Headless alternative, no window needed:  tangt mcp-serve path/to/chart.tangt",
+                );
+
+                ui.separator();
+                ui.heading("Assistant");
+                self.assist.settings_ui(ui);
+            });
+        self.show_prefs = open;
     }
 
     fn status_bar(&mut self, root: &mut egui::Ui) {
@@ -606,6 +1056,8 @@ impl eframe::App for TangtApp {
                 show_editor: self.show_editor,
                 editor_on_left: self.editor_on_left,
                 camera: Some(self.camera),
+                mcp: self.mcp_prefs.clone(),
+                assist: self.assist.prefs.clone(),
             },
         );
     }
@@ -686,9 +1138,16 @@ impl eframe::App for TangtApp {
             self.last_title = title;
         }
 
+        self.reconcile_mcp(ctx);
+        self.drain_mcp();
+        self.drain_assist();
+        self.preferences(ctx);
         self.shortcuts(ctx);
         self.menu_bar(root);
         self.status_bar(root);
+        if self.assist.prefs.show_panel {
+            self.assist_panel(root);
+        }
 
         let theme = Theme::new(ctx.theme() == egui::Theme::Dark);
 
