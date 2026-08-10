@@ -1,0 +1,23 @@
+title "Website Redesign"
+axis auto
+today 2026-08-10
+exclude weekends
+exclude 2026-12-24..2027-01-02
+
+section Design
+task "Wireframes"      : wf, 2026-08-03, 5d
+task "Visual design"   : vis, after wf, 10d, #4fa3ff, 60%
+task "Design review"   : rev, after vis, 3d
+milestone "Sign-off"   : ds, after rev
+
+section Build
+task "Frontend"        : fe, after ds + 2d, 20d, 25%
+task "Backend"         : be, after ds, 15d, active
+task "Integration"     : int, after fe be, 5d
+task "QA"              : qa, after int, 8d, crit
+
+section Launch
+task "Content load"    : cl, after qa, until 2026-11-20
+milestone "Go live"    : gl, after cl
+// Post-launch support runs on calendar dates
+task "Hypercare"       : hc, after gl, 2w, #7bd88f
