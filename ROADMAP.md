@@ -60,19 +60,20 @@ portfolio/multi-project rollups, cost/budget tracking, SF dependencies.
 
 ## AI assist (SLM + MCP) — shipped, with follow-ups
 
-The MCP server (stdio + token-gated loopback HTTP) and the local-model plan
-assistant are implemented; see the README. Ten tools, one shared
-implementation in `tangt-core::tools`, every mutation applied as a single
-undoable `Op`. Remaining work:
+The MCP server (stdio + token-gated loopback HTTP), the plan assistant, and
+the in-process llama.cpp engine are implemented; see the README. Ten tools,
+one shared implementation in `tangt-core::tools`, every mutation applied as a
+single undoable `Op`. Remaining work:
 
-- **Bundled local model** (M–L) — today the assistant needs an endpoint the
-  user runs (Ollama or OpenAI-compatible). Ship an in-process llama.cpp
-  backend behind a `builtin-llm` feature with a small GGUF catalogue,
-  resumable download and SHA-256 verification, so a fresh install can use the
-  assistant with nothing else set up. Weighed against a C++ toolchain on every
-  CI runner and a much slower release build.
 - **A `render` tool** (S) — depends on the headless CLI (P0 #1); would let an
   agent produce a PNG/SVG of the plan it just edited.
+- **GPU offload for the built-in engine** (M) — the backend is CPU-only today.
+  Metal on macOS and CUDA/Vulkan elsewhere are `llama-cpp-2` feature flags, but
+  each one that is switched on has to build on every CI runner, so this wants
+  per-platform feature selection rather than a blanket default.
+- **Keep the catalogue current** (S, recurring) — the entries pin URLs and
+  checksums for specific GGUF quantizations; they need revisiting as better
+  small tool-calling models appear.
 - **MCP client** (M) — let the in-app assistant call *other* MCP servers, so
   it can pull a ticket list or a calendar while planning.
 - **Streaming tool feedback in the canvas** (S) — highlight the bar a tool call
