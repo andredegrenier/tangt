@@ -9,7 +9,6 @@ name = "tangt"
 path = "src/main.rs"
 
 [dependencies]
-directories = "6.0.0"
 eframe = { version = "0.35.0", features = ["persistence"] }
 resvg = "0.48.1"
 rfd = "0.17.2"

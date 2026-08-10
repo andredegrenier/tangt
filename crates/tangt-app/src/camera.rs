@@ -24,6 +24,26 @@ impl Default for GanttCamera {
 }
 
 impl GanttCamera {
+    /// Persisted state is user-editable JSON: a NaN or zero zoom would make
+    /// `px_per_day` zero and turn day math into saturating garbage, so clamp
+    /// on the way in.
+    pub fn sanitized(mut self) -> Self {
+        if !self.zoom.is_finite() {
+            self.zoom = 1.0;
+        }
+        self.zoom = self.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        if !self.left_day.is_finite() {
+            self.left_day = 0.0;
+        }
+        self.left_day = self
+            .left_day
+            .clamp(tangt_core::resolve::MIN_DAY as f64, tangt_core::resolve::MAX_DAY as f64);
+        if !self.y_scroll.is_finite() {
+            self.y_scroll = 0.0;
+        }
+        self
+    }
+
     pub fn px_per_day(&self) -> f32 {
         PX_PER_DAY * self.zoom
     }

@@ -43,11 +43,14 @@ impl Calendar {
         self.exclude_weekends || !self.holidays.is_empty()
     }
 
-    /// First workday at or after `day`.
+    /// First workday at or after `day`. Iteration-bounded: a pathological
+    /// holiday block must not spin here.
     pub fn snap_forward(&self, day: i64) -> i64 {
         let mut d = day;
-        while !self.is_workday(d) {
+        let mut steps = 0i64;
+        while !self.is_workday(d) && steps < MAX_CALENDAR_STEPS {
             d += 1;
+            steps += 1;
         }
         d
     }
@@ -62,11 +65,16 @@ impl Calendar {
         if !self.has_exclusions() {
             return day.saturating_add(n);
         }
+        // The bound is on *iterations*, not on `n`: each pass advances one
+        // calendar day but only a workday decrements `remaining`, so a long
+        // holiday block would otherwise run far past `n` steps.
         let step = if n >= 0 { 1 } else { -1 };
         let mut remaining = n.abs();
         let mut d = day;
-        while remaining > 0 {
+        let mut steps = 0i64;
+        while remaining > 0 && steps < MAX_CALENDAR_STEPS {
             d += step;
+            steps += 1;
             if self.is_workday(d) {
                 remaining -= 1;
             }

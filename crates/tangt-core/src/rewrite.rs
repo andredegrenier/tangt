@@ -5,16 +5,23 @@
 //! Every function returns the `TextEdit`s for one gesture; the app wraps them
 //! in an `Op` and hands them to `Document::apply`.
 
-use crate::model::{Calendar, DurSrc, GanttModel, Row, StartSrc, Task, TaskId};
+use crate::model::{
+    Calendar, DurSrc, GanttModel, Row, StartSrc, Task, TaskId, MAX_CALENDAR_STEPS,
+};
 use crate::ops::TextEdit;
 use crate::parser::quote;
 use crate::resolve::format_day;
 use smol_str::SmolStr;
 
 /// Signed working-day distance from `from` to `to` (0 when equal).
+/// Saturating and iteration-bounded, like the calendar helpers it mirrors.
 fn signed_workdays(cal: &Calendar, from: i64, to: i64) -> i64 {
+    let delta = to.saturating_sub(from);
     if !cal.has_exclusions() {
-        return to - from;
+        return delta;
+    }
+    if delta.abs() > MAX_CALENDAR_STEPS {
+        return delta.clamp(-MAX_CALENDAR_STEPS, MAX_CALENDAR_STEPS);
     }
     let (lo, hi, sign) = if to >= from { (from, to, 1) } else { (to, from, -1) };
     let mut n = 0;

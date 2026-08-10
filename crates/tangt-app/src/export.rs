@@ -37,6 +37,14 @@ pub fn export_png(
         (size.width() * scale).ceil() as u32,
         (size.height() * scale).ceil() as u32,
     );
+    // A legal max-span chart is ~1.9M px wide; rasterizing it would ask for a
+    // multi-GB pixmap that tiny-skia's own overflow guard doesn't catch.
+    const MAX_PNG_PIXELS: u64 = 80_000_000; // ~320 MB RGBA
+    if u64::from(w) * u64::from(h) > MAX_PNG_PIXELS {
+        return Err(format!(
+            "chart is too large to rasterize at {scale}× ({w}×{h}) — export SVG or PDF instead"
+        ));
+    }
     let mut pixmap = resvg::tiny_skia::Pixmap::new(w.max(1), h.max(1))
         .ok_or_else(|| "pixmap allocation failed".to_string())?;
     resvg::render(

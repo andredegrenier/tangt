@@ -5,8 +5,7 @@
 useDefault = true
 
 [allowlist]
-description = "Build artifacts and rendered exports (never tracked, but keep `gitleaks dir` clean)"
+description = "Build artifacts (never tracked, but keep `gitleaks dir` clean)"
 paths = [
     '''^target/''',
-    '''(^|/)\.DS_Store$''',
 ]
