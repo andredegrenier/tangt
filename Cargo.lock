@@ -4500,7 +4500,7 @@ dependencies = [
  "axum",
  "directories",
  "eframe",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "llama-cpp-2",
  "resvg 0.48.1",
  "rfd",
